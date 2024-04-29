@@ -1,54 +1,92 @@
 import torch
-import clip
 from PIL import Image
+import clip
 from datasets import load_dataset
+from transformers import CLIPProcessor, CLIPModel
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
+from torch.utils.data import DataLoader
+import torch.optim as optim
+from torch.nn.functional import cosine_similarity
 
-# Load CLIP model
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model, preprocess = clip.load("ViT-B/32", device=device)
+def cosine_similarity_contrastive_loss(image_features, text_features, margin=0.3):
+    # Cosine similarity ranges from -1 to 1; higher means more similar
+    cosine_sim = cosine_similarity(image_features, text_features)
+
+    # Labels for similarity; assuming the simplest case where each image matches its corresponding text
+    labels = torch.eye(cosine_sim.size(0)).to(cosine_sim.device)
+
+    # Contrastive loss: if labels=1 (positive pairs), we want cosine_sim to be high (close to 1)
+    positive_loss = (1 - cosine_sim) * labels
+
+    # If labels=0 (negative pairs), we want cosine_sim to be low (close to -1 or below margin)
+    negative_loss = torch.clamp(cosine_sim - margin, min=0) * (1 - labels)
+
+    # Combine losses
+    loss = torch.mean(positive_loss + negative_loss)
+    return loss
 
 
+# Define label to text mapping based on your dataset specifics
+label_to_text = {
+    0: "angry",
+    1: "disgust",
+    2: "fear",
+    3: "happy",
+    4: "neutral",
+    5: "sad",
+    6: "surprise"
+}
+
+# Load dataset
 dataset = load_dataset("FER-Universe/DiffusionFER", 'default')
-print(dataset)  
+train_dataset = dataset['train']
 
-# Define transformations 
-transform = Compose([
-    Resize((224, 224)),  # Resize the image to 224x224 pixels
-    ToTensor(),          # Convert the image to a torch.Tensor
-    Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
-])
+# DataLoader and collation
+def collate_fn(batch):
+    images = [item['image'] for item in batch]
+    texts = [label_to_text[item['label']] for item in batch]  # Convert labels to text
+    return {"images": images, "labels": texts}
 
-# Inference function to predict emotion
-def predict_emotion(image_path):
-    image = Image.open(image_path).convert("RGB")
-    image = preprocess(image).unsqueeze(0).to(device)
+train_loader = DataLoader(train_dataset, batch_size=4, collate_fn=collate_fn)
 
-    # Text descriptions for each emotion class
-    text_descriptions = [
-        "A face with a neutral expression.",
-        "A face showing happiness, smiling.",
-        "A sad face with possible tears.",
-        "A surprised face with wide eyes.",
-        "A face expressing fear.",
-        "A disgusted face with a frown.",
-        "An angry face with a frown and intense eyes."
-    ]
-    text = clip.tokenize(text_descriptions).to(device)
+# Load CLIP model and processor
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+model.to(device)
 
-    # Calculate image and text features
-    with torch.no_grad():
-        image_features = model.encode_image(image)
-        text_features = model.encode_text(text)
+# Optimizer
+optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
-    # Compute similarities and select the highest one
-    similarities = (image_features @ text_features.T).softmax(dim=-1)
-    predicted_class_idx = similarities.argmax().item()
+# Number of epochs
+num_epochs = 3
 
-    return text_descriptions[predicted_class_idx]
+# Debugging model outputs
+def debug_model_outputs(image_features, text_features):
+    print("Image Features Norm:", image_features.norm(dim=1))
+    print("Text Features Norm:", text_features.norm(dim=1))
+    print("Sample Image Features:", image_features[0][:10])
+    print("Sample Text Features:", text_features[0][:10])
 
-# Example usage
-# Adjust the image path to point to a valid image in your dataset directory
-image_path = r'C:\Users\aidan\Documents\GitHub\FER_Classifier\happy-smile.webp'
-emotion = predict_emotion(image_path)
-print(f"Predicted Emotion: {emotion}")
+# Update training loop with debugging
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_loader:
+        images, texts = batch['images'], batch['labels']
+
+        inputs = processor(text=texts, images=images, return_tensors="pt", padding=True, truncation=True).to(device)
+        outputs = model(**inputs)
+
+        # Calculate loss using the revised contrastive loss
+        loss = cosine_similarity_contrastive_loss(outputs.image_embeds, outputs.text_embeds)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        print(f"Epoch {epoch+1}, Batch Loss: {loss.item()}")
+
+# Save the fine-tuned model
+
+model.save_pretrained(r'C:\Users\aidan\Documents\GitHub\FER_Classifier\model')
+processor.save_pretrained(r'C:\Users\aidan\Documents\GitHub\FER_Classifier\model')
