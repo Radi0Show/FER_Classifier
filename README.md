@@ -21,16 +21,20 @@ The model classifies emotions into eight categories:
 
 The system utilizes various models pre-trained on different datasets with the following performance metrics:
 
-| Model                  | AffectNet (8 classes) | AffectNet (7 classes) | AFEW  | VGAF  | LSD   | MTL   | Inference Time (ms) | Model Size (MB) |
-|------------------------|-----------------------|-----------------------|-------|-------|-------|-------|---------------------|-----------------|
-| `mobilenet_7.h5`       | -                     | 64.71%                | 55.35%| 68.92%| -     | 1.099 | 16 ± 5              | 14              |
-| `enet_b0_8_best_afew.pt`| 60.95%               | 64.63%                | 59.89%| 66.80%| 59.32%| 1.110 | 59 ± 26             | 16              |
-| `enet_b0_8_best_vgaf.pt`| 61.32%               | 64.57%                | 55.14%| 68.29%| 59.72%| 1.123 | 59 ± 26             | 16              |
-| `enet_b0_8_va_mtl.pt`  | 61.93%                | 64.94%                | 56.73%| 66.58%| 60.94%| 1.276 | 60 ± 32             | 16              |
-| `enet_b0_7.pt`         | -                     | 65.74%                | 56.99%| 65.18%| -     | 1.111 | 59 ± 26             | 16              |
-| `enet_b2_7.pt`         | -                     | 66.34%                | 59.63%| 69.84%| -     | 1.134 | 191 ± 18            | 30              |
-| `enet_b2_8.pt`         | 63.03%                | 66.29%                | 57.78%| 70.23%| 52.06%| 1.147 | 191 ± 18            | 30              |
-| `enet_b2_8_best.pt`    | 63.125%               | 66.51%                | 56.73%| 71.12%| -     | -     | 191 ± 18            | 30              |
+| Methods            | UAR DFEW  | WAR DFEW  |
+|--------------------|-----------|-----------|
+| C3D                | 42.74     | 53.54     |
+| P3D                | 43.97     | 54.47     |
+| I3D-RGB            | 43.40     | 54.27     |
+| 3D ResNet18        | 46.52     | 58.27     |
+| R(2+1)D18          | 42.79     | 53.22     |
+| ResNet18-LSTM      | 51.32     | 63.85     |
+| ResNet18-ViT       | 55.36     | 67.56     |
+|                    |           |           |
+| FER-CLIP           | 59.61     | 71.25     |
+| enet_b2_8_best.pt  | 63.125%   | 66.51%    |
+| ViT-B/16/SAM       | 0.5310    | 0.6220    |
+
 
 ## Implementation
 
