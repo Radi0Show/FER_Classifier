@@ -1,107 +1,87 @@
-import os
-import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader
-from torchvision.datasets import ImageFolder
-from torchvision.transforms import Compose, Resize, ToTensor, Normalize
-from transformers import ViTModel
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-class MLPClassifier(nn.Module):
-    def __init__(self, input_size, num_classes):
-        super(MLPClassifier, self).__init__()
-        self.fc1 = nn.Linear(input_size, 1024)  # Correct hidden units
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.3)  # Updated dropout rate
-        self.fc2 = nn.Linear(1024, num_classes)
-        self.output = nn.LogSoftmax(dim=-1)
+def create_patt_lite(input_shape=(224, 224, 3), weights=None):
+    # Load and truncate MobileNetV1
+    base_model = tf.keras.applications.MobileNet(input_shape=input_shape,
+                                                 include_top=False,  # Do not include the classification layer.
+                                                 weights='imagenet')
+    # Create a new model that ends at block 9's output
+    base_output = base_model.get_layer('conv_pw_9_relu').output
 
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return self.output(x)
+    # Patch Extraction Block
+    patch_extraction = layers.Conv2D(256, (3, 3), strides=(2, 2), padding='same', activation='relu')(base_output)
+    patch_extraction = layers.Conv2D(128, (3, 3), strides=(2, 2), padding='same', activation='relu')(patch_extraction)
 
-def extract_features(data_loader, model, device):
-    model.eval()
-    features = []
-    labels = []
-    with torch.no_grad():
-        for imgs, lbls in data_loader:
-            imgs = imgs.to(device)
-            lbls = lbls.to(device)
-            outputs = model(imgs).last_hidden_state[:, 0, :]  # Extracting the [CLS] token representation
-            features.append(outputs)
-            labels.append(lbls)
-    return torch.cat(features), torch.cat(labels)
+    # Global Average Pooling
+    gap = layers.GlobalAveragePooling2D()(patch_extraction)
 
-model_name = "google/vit-base-patch16-224"
-vit_model = ViTModel.from_pretrained(model_name)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-vit_model = vit_model.to(device)
+    # Attention Mechanism
+    attention_probs = layers.Dense(units=128, activation='softmax', name='attention_probs')(gap)
+    attended_features = layers.Multiply()([gap, attention_probs])
 
-transform = Compose([
-    Resize((224, 224)),
-    ToTensor(),
-    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+    # Classifier
+    dense_layer = layers.Dense(128, activation='relu')(attended_features)
+    output = layers.Dense(7, activation='softmax')(dense_layer)  # Assuming 7 classes for FER
 
-train_dataset = ImageFolder(root='images/train', transform=transform)
-test_dataset = ImageFolder(root='images/validation', transform=transform)
+    # Create the model
+    model = models.Model(inputs=base_model.input, outputs=output)
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    # Load weights if specified
+    if weights is not None:
+        model.load_weights(weights)
 
-mlp = MLPClassifier(input_size=768, num_classes=len(train_dataset.classes))
-mlp = mlp.to(device)
+    return model
 
-weights_path = 'mlp_classifier_best.pth'
-if os.path.exists(weights_path):
-    mlp.load_state_dict(torch.load(weights_path, map_location=device))
-    print("Loaded weights from file:", weights_path)
+def compile_and_train(model, train_data, validation_data, epochs=100):
+    # Compile the model
+    model.compile(optimizer=optimizers.Adam(learning_rate=0.0001),
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
 
-optimizer = optim.Adam(mlp.parameters(), lr=0.0001)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.95)
-criterion = nn.NLLLoss()
+    # Training the model
+    history = model.fit(train_data,
+                        epochs=epochs,
+                        validation_data=validation_data)
 
-best_accuracy = 0
-for epoch in range(15):
-    mlp.train()
-    total_loss = 0
-    for imgs, labels in train_loader:
-        imgs = imgs.to(device)
-        labels = labels.to(device)
-        # Directly using extracted features for forward pass
-        with torch.no_grad():
-            features = vit_model(imgs).last_hidden_state[:, 0, :]
-        outputs = mlp(features)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        total_loss += loss.item()
+    return history
 
-    scheduler.step()
-    print(f"Epoch {epoch+1}, Average Loss: {total_loss / len(train_loader)}")
+def prepare_data(train_dir, val_dir, batch_size=32, target_size=(224, 224)):
+    train_datagen = ImageDataGenerator(rescale=1./255,
+                                       rotation_range=20,
+                                       width_shift_range=0.2,
+                                       height_shift_range=0.2,
+                                       shear_range=0.2,
+                                       zoom_range=0.2,
+                                       horizontal_flip=True,
+                                       fill_mode='nearest')
 
-    mlp.eval()
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for imgs, labels in test_loader:
-            imgs = imgs.to(device)
-            labels = labels.to(device)
-            features = vit_model(imgs).last_hidden_state[:, 0, :]
-            outputs = mlp(features)
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+    val_datagen = ImageDataGenerator(rescale=1./255)
 
-    accuracy = 100 * correct / total
-    print(f"Test Accuracy: {accuracy}%")
-    if accuracy > best_accuracy:
-        best_accuracy = accuracy
-        torch.save(mlp.state_dict(), weights_path)
-        print("Saved best model weights with accuracy: {:.2f}%".format(best_accuracy))
+    train_generator = train_datagen.flow_from_directory(
+        train_dir,
+        target_size=target_size,
+        batch_size=batch_size,
+        class_mode='categorical')
 
-print("Training complete. Best model saved.")
+    validation_generator = val_datagen.flow_from_directory(
+        val_dir,
+        target_size=target_size,
+        batch_size=batch_size,
+        class_mode='categorical')
+
+    return train_generator, validation_generator
+
+# Set up paths (These need to be changed to the actual paths where the dataset is stored)
+train_dir = '/content/images/train'
+val_dir = '/content/images/test'
+
+# Model Creation with pre-trained weights
+model = create_patt_lite(weights='patt_lite_weights.h5')
+
+# Data Preparation
+train_data, validation_data = prepare_data(train_dir, val_dir)
+
+# Optionally, continue training the model or just perform inference
+history = compile_and_train(model, train_data, validation_data, epochs=10)
